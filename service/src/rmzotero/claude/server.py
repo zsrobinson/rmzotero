@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 import threading
+import time
 
 import anyio
 from mcp.server.fastmcp import FastMCP, Image
@@ -175,6 +176,19 @@ def create_app(ops: LibraryOps, secret: str, access: AccessConfig | None = None,
     hosts = list(dict.fromkeys(access.hostnames + legacy_hostnames))
     allowed = hosts + [f"{h}:*" for h in hosts]
     app = build(ops, allowed).streamable_http_app()
+    # The outer ASGI lifespan runs at boot; the stateless MCP lifespan runs per request.
+    from contextlib import asynccontextmanager
+    original = app.router.lifespan_context
+
+    @asynccontextmanager
+    async def lifespan(app):
+        async with original(app) as state:
+            if telemetry.enabled():
+                telemetry.emit(dict(event="mcp_start", v=1, service="rmzotero", version="0.4.0",
+                                    startup_ms=(time.perf_counter() - telemetry.PROCESS_START) * 1000))
+            yield state
+
+    app.router.lifespan_context = lifespan
     return ConnectorAuth(app, secret, access, legacy_enabled, hosts)
 
 
