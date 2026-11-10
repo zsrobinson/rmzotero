@@ -219,7 +219,7 @@ until the switch is complete. Do not share the legacy URL or include it in logs.
 
 Enabled by default; set `MCP_TELEMETRY=0` (or `false`/`off`) to disable.
 Stderr receives one `mcp_call ` prefix followed by a JSON object per dispatched
-call, and one `mcp_start ` record when the MCP lifespan is ready:
+call, and one `mcp_start ` record when the outer ASGI application starts, before any MCP request:
 
 ```json
 {"event":"mcp_call","v":1,"ts":"<UTC ISO>","service":"rmzotero","tool":"<registered name>","outcome":"ok|tool_error|error|timeout|refused","error_class":null,"total_ms":0.0,"phase_ms":{"serialize":0.0},"req_bytes":0,"resp_bytes":0}

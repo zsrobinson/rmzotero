@@ -71,14 +71,39 @@ def test_phase_allowlist():
 
 
 def test_boot(capsys):
-    async def run():
-        mcp=FastMCP("test")
-        telemetry.install(mcp,"test","1")
-        async with mcp._mcp_server.lifespan(mcp._mcp_server):
-            pass
-    asyncio.run(run())
-    record=json.loads(capsys.readouterr().err.split(" ",1)[1])
-    assert record["event"]=="mcp_start" and record["startup_ms"]>0
+    from starlette.testclient import TestClient
+    from rmzotero.claude.server import create_app
+
+    app = create_app(None, "test-token")
+    assert "mcp_start " not in capsys.readouterr().err
+    with TestClient(app, base_url="http://localhost") as client:
+        lines = capsys.readouterr().err.splitlines()
+        starts = [line for line in lines if line.startswith("mcp_start ")]
+        assert len(starts) == 1  # Before the first authenticated request.
+        record = json.loads(starts[0].split(" ", 1)[1])
+        assert set(record) == {"event", "v", "service", "version", "startup_ms"}
+        assert record == dict(event="mcp_start", v=1, service="rmzotero", version="0.4.0",
+                              startup_ms=record["startup_ms"])
+        assert record["startup_ms"] > 0
+        for request_id in range(3):
+            response = client.post("/mcp/test-token", headers={
+                "Accept": "application/json, text/event-stream"}, json={
+                "jsonrpc": "2.0", "id": request_id, "method": "initialize",
+                "params": {"protocolVersion": "2025-03-26", "capabilities": {},
+                           "clientInfo": {"name": "test", "version": "1"}}})
+            assert response.status_code == 200
+        assert "mcp_start " not in capsys.readouterr().err
+    assert "mcp_start " not in capsys.readouterr().err
+
+
+def test_boot_disabled(monkeypatch, capsys):
+    from starlette.testclient import TestClient
+    from rmzotero.claude.server import create_app
+
+    monkeypatch.setenv("MCP_TELEMETRY", "0")
+    with TestClient(create_app(None, "test-token")):
+        pass
+    assert "mcp_start " not in capsys.readouterr().err
 
 
 def test_emitter_allowlists(capsys):

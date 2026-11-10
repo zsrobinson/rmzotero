@@ -160,17 +160,6 @@ def install(mcp: FastMCP, service: str, version: str) -> None:
             emit(record)
 
     mcp._mcp_server.request_handlers[types.CallToolRequest] = measured
-    original = mcp._mcp_server.lifespan
-
-    from contextlib import asynccontextmanager
-    @asynccontextmanager
-    async def lifespan(server: Any) -> Any:
-        async with original(server) as state:
-            if enabled():
-                emit(dict(event="mcp_start", v=1, service=service, version=version,
-                          startup_ms=(time.perf_counter() - PROCESS_START) * 1000))
-            yield state
-    mcp._mcp_server.lifespan = lifespan
 
 
 def count(name: str, amount: int = 1) -> None:
