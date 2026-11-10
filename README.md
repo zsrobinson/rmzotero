@@ -170,3 +170,47 @@ docker run -d -p 3001:3000 -e JWT_SECRET_KEY=dev -e STORAGE_URL=http://localhost
 docker exec rmfc /rmfakecloud-docker setuser -u tester -p testpass123 -a -s && docker restart rmfc
 RMFAKECLOUD_TEST_URL=http://localhost:3001 RMFAKECLOUD_TEST_LOGIN=tester:testpass123 .venv/bin/pytest tests/test_rmfakecloud_live.py
 ```
+
+### Cloudflare Access connector
+
+The origin can validate Cloudflare Access assertions for a separate hostname while
+keeping the legacy connector available during migration. Access and its managed
+OAuth application must already be configured upstream. Example (no credentials):
+
+```toml
+[access]
+team_domain = "https://your-team.cloudflareaccess.com"
+audience = "your-application-audience"
+hostnames = ["zoteromcp.example.com"]
+# allowed_emails = ["you@example.com"] # optional additional restriction
+```
+
+Connect Claude to `https://zoteromcp.example.com/mcp` and complete the Access sign-in.
+Only configured Access hosts serve this path, and every request requires a valid
+`Cf-Access-Jwt-Assertion`. The origin checks RS256 signatures against the team's
+cached public JWKS, issuer, audience, expiry, and not-before (30 seconds of clock
+leeway). Keys are cached for five minutes; unknown keys trigger refresh after the
+JWT client's short refresh cooldown. Validation or JWKS failures return a generic
+401; an email allowlist denial returns 403. Cookies and bearer headers do not
+replace the assertion. A partial Access configuration fails startup.
+
+Environment overrides: `RMZOTERO_ACCESS_TEAM_DOMAIN`, `RMZOTERO_ACCESS_AUDIENCE`,
+`RMZOTERO_ACCESS_HOSTNAMES`, and `RMZOTERO_ACCESS_ALLOWED_EMAILS`. List overrides
+are comma-separated; an empty list override clears the list.
+
+Under the existing `[claude]` section, `legacy_enabled = true` keeps
+`/mcp/<secret>` available on legacy hosts. Set it to `false` only after switching
+connectors. `legacy_hostnames` defaults to
+`["rmzoteroclaude.zsrobinson.com", "127.0.0.1", "localhost"]`, preserving the
+existing deployment and local checks while rejecting other hosts. Deployments
+using other legacy DNS names must add them before upgrading. These settings have
+`RMZOTERO_MCP_LEGACY_ENABLED` (`true`/`false`) and
+`RMZOTERO_MCP_LEGACY_HOSTNAMES` overrides. Host checks use the actual Host header,
+including optional ports, and ignore forwarded host headers; HTTPS origins for
+allowed hosts and local HTTP origins are accepted. Access hosts never accept the
+secret path, even if also listed as legacy hosts. With Access unconfigured,
+`/mcp` remains unavailable (404). Access-only operation needs no legacy secret.
+
+To migrate: verify both endpoints, add and authorize the new connector, test a
+read-only tool, then disable the old connector. Keep the legacy flag enabled
+until the switch is complete. Do not share the legacy URL or include it in logs.

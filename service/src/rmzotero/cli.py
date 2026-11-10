@@ -53,17 +53,19 @@ def cmd_run(cfg: Config, args) -> int:
     host, _, port = cfg.api_listen.rpartition(":")
     Api(engine, cfg.api_token).serve(host or "0.0.0.0", int(port))
     log.info("plugin API listening on %s", cfg.api_listen)
-    if cfg.mcp_secret and len(cfg.mcp_secret) < 24:
+    if cfg.mcp_legacy_enabled and cfg.mcp_secret and len(cfg.mcp_secret) < 24:
         log.error("Claude connector disabled: [claude] secret must be at least 24 characters (it is the only credential)")
-    elif cfg.mcp_secret:
+    elif (cfg.mcp_legacy_enabled and cfg.mcp_secret) or cfg.access.enabled:
         from .claude.ops import LibraryOps
         from .claude.resolve import Resolver
         from .claude.server import serve as serve_mcp
 
         mhost, _, mport = cfg.mcp_listen.rpartition(":")
         ops = LibraryOps(engine, Resolver(cfg.translation_server_url, cfg.contact_email))
-        _t, info = serve_mcp(ops, cfg.mcp_secret, mhost or "0.0.0.0", int(mport))
-        log.info("Claude connector listening on %s at /mcp/%s…", cfg.mcp_listen, cfg.mcp_secret[:4])
+        _t, info = serve_mcp(ops, cfg.mcp_secret, mhost or "0.0.0.0", int(mport),
+                             access=cfg.access, legacy_enabled=cfg.mcp_legacy_enabled,
+                             legacy_hostnames=cfg.mcp_legacy_hostnames)
+        log.info("Claude connector listening on %s", cfg.mcp_listen)
     else:
         log.info("Claude connector disabled (set [claude] secret to enable)")
     zotero_stream(cfg.zotero_api_key, cfg.zotero_user_id, engine.wakeup, stop)
