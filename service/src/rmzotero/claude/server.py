@@ -11,6 +11,8 @@ from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
+from ..config import AccessConfig
+from .auth import ConnectorAuth
 from .ops import Busy, LibraryOps, NotFound
 
 log = logging.getLogger(__name__)
@@ -33,15 +35,19 @@ def _json(data) -> str:
     return json.dumps(data, ensure_ascii=False, indent=1)
 
 
-def build(ops: LibraryOps, secret: str) -> FastMCP:
+def build(ops: LibraryOps, allowed_hosts: list[str]) -> FastMCP:
     mcp = FastMCP(
         "rmzotero",
         instructions=INSTRUCTIONS,
-        streamable_http_path=f"/mcp/{secret}",
+        streamable_http_path="/mcp",
         stateless_http=True,
         json_response=True,
-        # the secret path is the credential; the server sits behind the user's own reverse proxy
-        transport_security=TransportSecuritySettings(enable_dns_rebinding_protection=False),
+        transport_security=TransportSecuritySettings(
+            enable_dns_rebinding_protection=True,
+            allowed_hosts=allowed_hosts,
+            allowed_origins=[f"https://{h}" for h in allowed_hosts]
+                            + ["http://127.0.0.1:*", "http://localhost:*"],
+        ),
     )
 
     async def call(fn, *args, **kw):
@@ -155,12 +161,24 @@ def build(ops: LibraryOps, secret: str) -> FastMCP:
     return mcp
 
 
-def serve(ops: LibraryOps, secret: str, host: str, port: int) -> tuple[threading.Thread, dict]:
+def create_app(ops: LibraryOps, secret: str, access: AccessConfig | None = None,
+               legacy_enabled: bool = True, legacy_hostnames: list[str] | None = None):
+    access = access or AccessConfig()
+    legacy_hostnames = legacy_hostnames if legacy_hostnames is not None else [
+        "rmzoteroclaude.zsrobinson.com", "127.0.0.1", "localhost"]
+    hosts = list(dict.fromkeys(access.hostnames + legacy_hostnames))
+    allowed = hosts + [f"{h}:*" for h in hosts]
+    app = build(ops, allowed).streamable_http_app()
+    return ConnectorAuth(app, secret, access, legacy_enabled, hosts)
+
+
+def serve(ops: LibraryOps, secret: str, host: str, port: int, *, access: AccessConfig | None = None,
+          legacy_enabled: bool = True, legacy_hostnames: list[str] | None = None) -> tuple[threading.Thread, dict]:
     """Run the MCP server on its own thread; returns the thread and a dict filled with the bound port."""
     import uvicorn
 
-    app = build(ops, secret).streamable_http_app()
-    config = uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="on")
+    app = create_app(ops, secret, access, legacy_enabled, legacy_hostnames)
+    config = uvicorn.Config(app, host=host, port=port, log_level="warning", lifespan="on", access_log=False)
     server = uvicorn.Server(config)
     info: dict = {"server": server}
 

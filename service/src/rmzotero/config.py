@@ -61,6 +61,33 @@ class Settings:
 
 
 @dataclass
+class AccessConfig:
+    team_domain: str = ""
+    audience: str = ""
+    hostnames: list[str] = field(default_factory=list)
+    allowed_emails: list[str] = field(default_factory=list)
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.team_domain and self.audience and self.hostnames)
+
+    def __post_init__(self):
+        import re
+
+        if any((self.team_domain, self.audience, self.hostnames)):
+            self.team_domain = self.team_domain.rstrip("/")
+            if not self.team_domain.startswith("https://"):
+                self.team_domain = "https://" + self.team_domain
+            if not re.fullmatch(r"https://[a-z0-9-]+\.cloudflareaccess\.com", self.team_domain):
+                raise ValueError("access.team_domain must be a Cloudflare Access team domain")
+            if not self.enabled:
+                raise ValueError("access requires team_domain, audience and hostnames")
+        self.hostnames = [h.lower() for h in self.hostnames]
+        if any(not re.fullmatch(r"[a-z0-9]+(?:[a-z0-9.-]*[a-z0-9])?", h) for h in self.hostnames):
+            raise ValueError("access.hostnames must contain exact DNS hostnames")
+
+
+@dataclass
 class Config:
     data_dir: Path
     zotero_user_id: int
@@ -77,6 +104,9 @@ class Config:
     # Claude connector (ADR 0015); disabled unless a secret is set
     mcp_secret: str = ""
     mcp_listen: str = "0.0.0.0:8788"
+    mcp_legacy_enabled: bool = True
+    mcp_legacy_hostnames: list[str] = field(default_factory=lambda: ["rmzoteroclaude.zsrobinson.com", "127.0.0.1", "localhost"])
+    access: AccessConfig = field(default_factory=AccessConfig)
     contact_email: str = ""  # sent to Unpaywall and OpenAlex when looking for open-access PDFs
     translation_server_url: str = "http://translation-server:1969"
 
@@ -87,6 +117,15 @@ class Config:
         env = os.environ.get
         z, w, r, a, s = (raw.get(k, {}) for k in ("zotero", "webdav", "rmfakecloud", "api", "sync"))
         c, t = raw.get("claude", {}), raw.get("translation_server", {})
+        access = raw.get("access", {})
+
+        def items(name, section, key, default):
+            value = env(name)
+            return [s.strip() for s in value.split(",") if s.strip()] if value is not None else section.get(key, default)
+
+        legacy = env("RMZOTERO_MCP_LEGACY_ENABLED")
+        if legacy is not None and legacy.lower() not in ("true", "false"):
+            raise ValueError("RMZOTERO_MCP_LEGACY_ENABLED must be true or false")
         defaults = Settings.from_dict({**s, "epub": raw.get("epub", {})})
         return cls(
             data_dir=Path(env("RMZOTERO_DATA_DIR") or raw.get("data_dir", "/data")),
@@ -103,6 +142,15 @@ class Config:
             defaults=defaults,
             mcp_secret=env("RMZOTERO_MCP_SECRET") or c.get("secret", ""),
             mcp_listen=c.get("listen", "0.0.0.0:8788"),
+            mcp_legacy_enabled=legacy.lower() == "true" if legacy is not None else c.get("legacy_enabled", True),
+            mcp_legacy_hostnames=items("RMZOTERO_MCP_LEGACY_HOSTNAMES", c, "legacy_hostnames",
+                                       ["rmzoteroclaude.zsrobinson.com", "127.0.0.1", "localhost"]),
+            access=AccessConfig(
+                team_domain=env("RMZOTERO_ACCESS_TEAM_DOMAIN") or access.get("team_domain", ""),
+                audience=env("RMZOTERO_ACCESS_AUDIENCE") or access.get("audience", ""),
+                hostnames=items("RMZOTERO_ACCESS_HOSTNAMES", access, "hostnames", []),
+                allowed_emails=items("RMZOTERO_ACCESS_ALLOWED_EMAILS", access, "allowed_emails", []),
+            ),
             contact_email=env("RMZOTERO_CONTACT_EMAIL") or c.get("contact_email", ""),
             translation_server_url=env("TRANSLATION_SERVER_URL") or t.get("url", "http://translation-server:1969"),
         )
