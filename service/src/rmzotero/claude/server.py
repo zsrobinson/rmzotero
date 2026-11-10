@@ -11,6 +11,7 @@ from mcp.server.fastmcp import FastMCP, Image
 from mcp.server.transport_security import TransportSecuritySettings
 from mcp.types import ToolAnnotations
 
+from .. import telemetry
 from ..config import AccessConfig
 from .auth import ConnectorAuth
 from .ops import Busy, LibraryOps, NotFound
@@ -31,6 +32,7 @@ Ask the user how they want things organised before creating collections or filin
 """
 
 
+@telemetry.timed("serialize")
 def _json(data) -> str:
     return json.dumps(data, ensure_ascii=False, indent=1)
 
@@ -53,8 +55,11 @@ def build(ops: LibraryOps, allowed_hosts: list[str]) -> FastMCP:
     async def call(fn, *args, **kw):
         try:
             return await anyio.to_thread.run_sync(lambda: fn(*args, **kw))
-        except (NotFound, ValueError, Busy) as e:
-            raise ValueError(str(e)) from e
+        except BaseException as e:
+            telemetry.failure(e)
+            if isinstance(e, (NotFound, ValueError, Busy)):
+                raise ValueError(str(e)) from e
+            raise
 
     @mcp.tool(annotations=READ)
     async def service_diagnostics() -> str:
@@ -158,6 +163,7 @@ def build(ops: LibraryOps, allowed_hosts: list[str]) -> FastMCP:
         ("Jane Smith"). Collections are changed with file_items."""
         return _json(await call(ops.edit_item, item_key, fields, add_tags, remove_tags))
 
+    telemetry.install(mcp, "rmzotero", "0.4.0")
     return mcp
 
 

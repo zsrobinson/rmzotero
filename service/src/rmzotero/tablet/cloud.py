@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .. import telemetry
+
 import json
 import logging
 import uuid
@@ -70,6 +72,7 @@ class RmCloudClient:
             )
         return self.token_path.read_text().strip()
 
+    @telemetry.timed("upstream")
     def _refresh_user_token(self) -> str:
         r = self.http.post(
             f"{self.base_url}/token/json/2/user/new",
@@ -82,6 +85,7 @@ class RmCloudClient:
     def user_token(self) -> str:
         return self._user_token or self._refresh_user_token()
 
+    @telemetry.timed("upstream")
     def _request(self, method: str, path: str, **kw) -> httpx.Response:
         for attempt in (1, 2):
             headers = dict(kw.pop("headers", {}) or {})

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from .. import telemetry
+
 import logging
 import random
 import time
@@ -58,6 +60,7 @@ class ZoteroClient:
     def _url(self, path: str) -> str:
         return f"{self.base}/users/{self.user_id}{path}"
 
+    @telemetry.timed("upstream")
     def _get(self, path: str, params: dict | None = None) -> httpx.Response:
         for attempt in range(5):
             r = self.http.get(self._url(path), params=params, headers=self.headers)
@@ -93,6 +96,7 @@ class ZoteroClient:
     def write_items(self, objects: list[dict]) -> WriteResult:
         return self._write("/items", objects)
 
+    @telemetry.timed("upstream")
     def schema(self) -> dict:
         """Zotero's item schema (item types, their fields and creator types)."""
         r = self.http.get(f"{self.base}/schema", headers={"Zotero-API-Version": "3"})
@@ -102,6 +106,7 @@ class ZoteroClient:
     def write_collections(self, objects: list[dict]) -> WriteResult:
         return self._write("/collections", objects)
 
+    @telemetry.timed("upstream")
     def _write(self, path: str, objects: list[dict]) -> WriteResult:
         res = WriteResult()
         for i in range(0, len(objects), 50):
@@ -129,6 +134,7 @@ class ZoteroClient:
                     res.failed[key] = f"{err.get('code')}: {err.get('message')}"
         return res
 
+    @telemetry.timed("upstream")
     def delete_items(self, keys_versions: list[tuple[str, int]]) -> WriteResult:
         res = WriteResult()
         for key, version in keys_versions:
@@ -177,6 +183,7 @@ class MemoryZotero:
     def items(self) -> Iterable[dict]:
         return (o for o in self.objects.values() if o["_kind"] == "item")
 
+    @telemetry.timed("upstream")
     def schema(self) -> dict:
         from .schema import MINI
 
@@ -244,6 +251,7 @@ class MemoryZotero:
         res.library_version = self.version
         return res
 
+    @telemetry.timed("upstream")
     def delete_items(self, keys_versions: list[tuple[str, int]]) -> WriteResult:
         res = WriteResult()
         for key, version in keys_versions:

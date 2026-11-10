@@ -13,6 +13,8 @@ reported as refusing, not worked around.
 
 from __future__ import annotations
 
+from .. import telemetry
+
 import logging
 import re
 from dataclasses import dataclass, field
@@ -132,6 +134,7 @@ class Resolver:
         self.http = client or httpx.Client(timeout=60.0, follow_redirects=True, headers={"User-Agent": "rmzotero (+https://github.com/zsrobinson/rmzotero)"})
 
     # -- metadata ------------------------------------------------------------------
+    @telemetry.timed("upstream")
     def resolve(self, query: str) -> Resolution:
         q = query.strip()
         res = Resolution(q)
@@ -186,6 +189,7 @@ class Resolver:
         return f"Zotero's translators couldn't read this page ({error}; the page itself answers HTTP {status}). Add it with create_item."
 
     # -- PDFs ------------------------------------------------------------------------
+    @telemetry.timed("upstream")
     def open_access_candidates(self, doi: str) -> tuple[list[PdfAttempt], list[PdfAttempt], list[str]]:
         """Free copies of a DOI: (PDF links, landing pages that may declare one, notes on what was checked)."""
         pdfs: list[PdfAttempt] = []
@@ -243,6 +247,7 @@ class Resolver:
     def open_access_pdf_urls(self, doi: str) -> list[str]:
         return [a.url for a in self.open_access_candidates(doi)[0]]
 
+    @telemetry.timed("upstream")
     def fetch(self, url: str) -> tuple[bytes | None, Page | None, str]:
         """GET a URL that should be a PDF or a page about one: (PDF bytes, the HTML page, why neither)."""
         try:
