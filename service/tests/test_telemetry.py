@@ -79,3 +79,55 @@ def test_boot(capsys):
     asyncio.run(run())
     record=json.loads(capsys.readouterr().err.split(" ",1)[1])
     assert record["event"]=="mcp_start" and record["startup_ms"]>0
+
+
+def test_emitter_allowlists(capsys):
+    telemetry.emit(dict(event="mcp_call", v=1, arguments="PRIVATE_SENTINEL",
+                        outcome="PRIVATE_SENTINEL", error_class="PRIVATE_SENTINEL",
+                        phase_ms={"query":1.0,"PRIVATE_SENTINEL":2.0}))
+    line=capsys.readouterr().err
+    assert "PRIVATE_SENTINEL" not in line
+    record=json.loads(line.split(" ",1)[1])
+    assert record["phase_ms"]=={"query":1.0}
+    assert record["error_class"]=="exception" and record["outcome"]=="error"
+
+
+def test_unknown_tool_never_reaches_sdk(capsys,caplog):
+    async def run():
+        mcp=FastMCP("test")
+        async def forbidden(request):
+            pytest.fail("unknown name reached SDK handler")
+        mcp._mcp_server.request_handlers[types.CallToolRequest]=forbidden
+        telemetry.install(mcp,"test","1")
+        request=types.CallToolRequest(method="tools/call",params=types.CallToolRequestParams(
+            name="PRIVATE_SENTINEL",arguments={"value":"PRIVATE_SENTINEL"}))
+        result=await mcp._mcp_server.request_handlers[types.CallToolRequest](request)
+        assert result.root.isError
+    asyncio.run(run())
+    line=capsys.readouterr().err
+    assert "PRIVATE_SENTINEL" not in line+caplog.text
+    record=json.loads(line.split(" ",1)[1])
+    assert record["tool"]=="unknown" and record["outcome"]=="tool_error"
+
+
+def test_network_timeout_classification():
+    import httpx
+    assert telemetry.classify(httpx.ReadTimeout("PRIVATE_SENTINEL"))==("timeout","exception")
+
+
+def test_output_conversion_exception_is_not_returned_tool_error(capsys):
+    async def run():
+        mcp=FastMCP("test")
+        @mcp.tool()
+        async def broken() -> int:
+            return "PRIVATE_SENTINEL"
+        telemetry.install(mcp,"test","1")
+        request=types.CallToolRequest(method="tools/call",params=types.CallToolRequestParams(
+            name="broken",arguments={}))
+        result=await mcp._mcp_server.request_handlers[types.CallToolRequest](request)
+        assert result.root.isError
+    asyncio.run(run())
+    line=capsys.readouterr().err
+    assert "PRIVATE_SENTINEL" not in line
+    record=json.loads(line.split(" ",1)[1])
+    assert record["outcome"]=="error" and record["error_class"]=="exception"

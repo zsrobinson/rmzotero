@@ -9,6 +9,8 @@ import json
 import os
 import sys
 import time
+import subprocess
+import httpx
 from typing import Any, Callable, Iterator, TypeVar
 from mcp.server.fastmcp import FastMCP
 
@@ -19,8 +21,10 @@ from mcp import types
 PROCESS_START = time.perf_counter()
 try:
     # Linux process birth, including imports before this module was loaded.
+    with open("/proc/self/stat") as stat:
+        birth_ticks = int(stat.read().rsplit(")", 1)[1].split()[19])
     PROCESS_START = time.perf_counter() - (time.clock_gettime(time.CLOCK_BOOTTIME) -
-        int(open("/proc/self/stat").read().rsplit(")", 1)[1].split()[19]) / os.sysconf("SC_CLK_TCK"))
+        birth_ticks / os.sysconf("SC_CLK_TCK"))
 except (OSError, AttributeError, ValueError):
     pass
 
@@ -28,6 +32,14 @@ PHASES = frozenset({"render", "cups", "status", "db_open", "query", "serialize",
                     "lock_wait", "mirror_read", "upstream", "fetch", "store", "publish"})
 ERRORS = frozenset({"ValueError", "TypeError", "OSError", "TimeoutError", "PermissionError",
                     "Busy", "NotFound", "ToolError", "CancelledError"})
+FIELDS = {
+    "mcp_call": frozenset({"event", "v", "ts", "service", "tool", "outcome", "error_class",
+                           "total_ms", "phase_ms", "req_bytes", "resp_bytes"}),
+    "mcp_sync": frozenset({"event", "v", "ts", "outcome", "error_class", "total_ms",
+                           "phase_ms", "pages", "retries", "items_count"}),
+    "mcp_start": frozenset({"event", "v", "service", "version", "startup_ms"}),
+}
+OUTCOMES = frozenset({"ok", "tool_error", "error", "timeout", "refused"})
 _current: ContextVar[dict[str, Any] | None] = ContextVar("mcp_metric", default=None)
 _active: ContextVar[frozenset[str]] = ContextVar("mcp_phases", default=frozenset())
 
@@ -37,8 +49,18 @@ def enabled() -> bool:
 
 
 def emit(record: dict[str, Any]) -> None:
+    fields = FIELDS.get(record.get("event", ""))
+    if fields is None:
+        return
+    safe = {key: value for key, value in record.items() if key in fields}
+    if "phase_ms" in safe:
+        safe["phase_ms"] = {key: value for key, value in safe["phase_ms"].items() if key in PHASES}
+    if "error_class" in safe and safe["error_class"] not in ERRORS | {None, "exception"}:
+        safe["error_class"] = "exception"
+    if "outcome" in safe and safe["outcome"] not in OUTCOMES:
+        safe["outcome"] = "error"
     try:
-        sys.stderr.write(record["event"] + " " + json.dumps(record, separators=(",", ":")) + "\n")
+        sys.stderr.write(safe["event"] + " " + json.dumps(safe, separators=(",", ":")) + "\n")
     except (OSError, ValueError):
         pass  # Metrics must never change tool behavior.
 
@@ -46,7 +68,7 @@ def emit(record: dict[str, Any]) -> None:
 def classify(exc: BaseException) -> tuple[str, str]:
     name = type(exc).__name__
     code = name if name in ERRORS else "exception"
-    if isinstance(exc, TimeoutError) or name == "Busy":
+    if isinstance(exc, (TimeoutError, subprocess.TimeoutExpired, httpx.TimeoutException)) or name == "Busy":
         return "timeout", code
     if isinstance(exc, PermissionError):
         return "refused", code
@@ -83,7 +105,7 @@ def timed(name: str) -> Callable[[F], F]:
 
 def failure(exc: BaseException) -> None:
     record = _current.get()
-    if record is not None:
+    if record is not None and record["outcome"] == "ok":
         record["outcome"], record["error_class"] = classify(exc)
 
 
@@ -94,6 +116,17 @@ def install(mcp: FastMCP, service: str, version: str) -> None:
     Serialize the normalized result before stopping the monotonic clock.
     """
     handler = mcp._mcp_server.request_handlers[types.CallToolRequest]
+    call_tool = mcp._tool_manager.call_tool
+
+    async def guarded(*args: Any, **kwargs: Any) -> Any:
+        try:
+            return await call_tool(*args, **kwargs)
+        except BaseException as exc:
+            # SDK conversion/validation can fail after the adapter returns.
+            # Inspect only the exception type; never stringify its cause.
+            failure(exc.__cause__ or exc)
+            raise
+    setattr(mcp._tool_manager, "call_tool", guarded)
 
     async def measured(request: types.CallToolRequest) -> types.ServerResult:
         if not enabled():
@@ -107,7 +140,12 @@ def install(mcp: FastMCP, service: str, version: str) -> None:
         token = _current.set(record)
         try:
             record["req_bytes"] = len(request.params.model_dump_json(by_alias=True, exclude_none=True).encode())
-            result = await handler(request)
+            if request.params.name in names:
+                result = await handler(request)
+            else:
+                # The SDK otherwise logs the supplied name in a warning.
+                result = types.ServerResult(types.CallToolResult(
+                    content=[types.TextContent(type="text", text="Unknown tool")], isError=True))
             with phase("serialize"):
                 record["resp_bytes"] = len(result.model_dump_json(by_alias=True, exclude_none=True).encode())
             if getattr(result.root, "isError", False) and record["outcome"] == "ok":

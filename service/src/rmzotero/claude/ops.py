@@ -106,10 +106,10 @@ class LibraryOps:
                 return None
             try:
                 self._schema = Schema(fetch())
-            except Exception as e:  # network or parse trouble: try again next time
+            except Exception:  # network or parse trouble: try again next time
                 import logging
 
-                logging.getLogger(__name__).warning("couldn't load Zotero's item schema: %s", e)
+                logging.getLogger(__name__).warning("couldn't load Zotero's item schema")
                 return None
         return self._schema
 
