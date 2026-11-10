@@ -12,6 +12,8 @@ API, which Zotero allows for WebDAV-backed personal libraries.
 
 from __future__ import annotations
 
+from .. import telemetry
+
 import hashlib
 import io
 import re
@@ -70,6 +72,7 @@ class WebDAVFiles:
         auth = (username, password) if username else None
         self.http = client or httpx.Client(timeout=120.0, auth=auth)
 
+    @telemetry.timed("upstream")
     def get(self, key: str) -> tuple[str, bytes]:
         r = self.http.get(f"{self.base}/{key}.zip")
         if r.status_code == 404:
@@ -77,6 +80,7 @@ class WebDAVFiles:
         r.raise_for_status()
         return unzip_file(r.content)
 
+    @telemetry.timed("upstream")
     def stat(self, key: str) -> tuple[int, str] | None:
         r = self.http.get(f"{self.base}/{key}.prop")
         if r.status_code == 404:
@@ -84,6 +88,7 @@ class WebDAVFiles:
         r.raise_for_status()
         return parse_prop(r.text)
 
+    @telemetry.timed("upstream")
     def put(self, key: str, filename: str, data: bytes, mtime_ms: int | None = None) -> tuple[str, int]:
         md5 = hashlib.md5(data).hexdigest()
         mtime = int(mtime_ms or time.time() * 1000)
@@ -101,11 +106,13 @@ class MemoryFiles:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}  # key.zip / key.prop
 
+    @telemetry.timed("upstream")
     def get(self, key: str) -> tuple[str, bytes]:
         if f"{key}.zip" not in self.files:
             raise FileMissing(key)
         return unzip_file(self.files[f"{key}.zip"])
 
+    @telemetry.timed("upstream")
     def put(self, key: str, filename: str, data: bytes, mtime_ms: int | None = None) -> tuple[str, int]:
         md5 = hashlib.md5(data).hexdigest()
         mtime = int(mtime_ms or time.time() * 1000)

@@ -15,6 +15,7 @@ import re
 import time
 from contextlib import contextmanager
 
+from .. import telemetry
 from ..annotations import convert as cv
 from ..pdf import edit
 from ..pdf.text import TextLayer
@@ -118,8 +119,9 @@ class LibraryOps:
 
     @contextmanager
     def _writing(self):
-        if not self.engine.lock.acquire(timeout=120):
-            raise Busy("The service is in the middle of a long sync; try again in a minute.")
+        with telemetry.phase("lock_wait"):
+            if not self.engine.lock.acquire(timeout=120):
+                raise Busy("The service is in the middle of a long sync; try again in a minute.")
         try:
             yield
         finally:
@@ -127,6 +129,7 @@ class LibraryOps:
         self.engine.wakeup.set()
 
     # -- lookups --------------------------------------------------------------------
+    @telemetry.timed("mirror_read")
     def _regular(self, key: str) -> dict:
         it = self.lib.items.get(key)
         if it is None or it.get("deleted"):
@@ -149,11 +152,13 @@ class LibraryOps:
         path = self.lib.collection_path(folder) if folder in self.lib.collections else ["Unfiled Items"]
         return {"on_tablet": row["state"] == "active", "tablet_state": row["state"], "tablet_location": "/".join(root + path)}
 
+    @telemetry.timed("mirror_read")
     def _pdf_attachments(self, item_key: str) -> list[dict]:
         atts = [a for a in self.lib.attachments(item_key) if a.get("contentType") == "application/pdf" and not a.get("deleted")]
         synced = {r["att_key"] for r in self.engine.state.docs()}
         return sorted(atts, key=lambda a: (a["key"] not in synced, a.get("dateAdded", "")))
 
+    @telemetry.timed("mirror_read")
     def _attachment_for(self, key: str) -> dict:
         it = self.lib.items.get(key)
         if it is not None and it.get("itemType") == "attachment":
@@ -172,6 +177,7 @@ class LibraryOps:
         _name, data = self.engine.files.get(att["key"])
         return data
 
+    @telemetry.timed("mirror_read")
     def _summary(self, it: dict) -> dict:
         return {
             "key": it["key"], "title": it.get("title", ""), "creators": creators_text(it), "date": it.get("date", ""),
@@ -180,6 +186,7 @@ class LibraryOps:
 
     # -- reading ----------------------------------------------------------------------
     @_retry_reads
+    @telemetry.timed("mirror_read")
     def search_library(self, query: str, collection: str | None = None, limit: int = 20, offset: int = 0) -> dict:
         tokens = [t for t in re.findall(r"\w+", (query or "").lower()) if t]
         scope = None
@@ -224,6 +231,7 @@ class LibraryOps:
         return res
 
     @_retry_reads
+    @telemetry.timed("mirror_read")
     def get_item(self, key: str) -> dict:
         it = self._regular(key)
         skip = {"key", "version", "creators", "tags", "collections", "relations", "deleted", "_kind"}
@@ -244,6 +252,7 @@ class LibraryOps:
                 "attachments": atts, "notes": notes, "annotation_count": n_ann}
 
     @_retry_reads
+    @telemetry.timed("mirror_read")
     def list_collections(self) -> dict:
         counts: dict[str, int] = {}
         for it in self.lib.regular_items():
@@ -256,6 +265,7 @@ class LibraryOps:
         return {"collections": cols}
 
     @_retry_reads
+    @telemetry.timed("mirror_read")
     def get_annotations(self, key: str, limit_items: int = 50) -> dict:
         if key in self.lib.collections:
             items = [it for it in self.lib.regular_items() if key in (it.get("collections") or []) and not it.get("deleted")][:limit_items]
@@ -302,6 +312,7 @@ class LibraryOps:
             text.append({"page": labels[i], "text": t[:15000]})
         return {"attachment": att["key"], "page_count": len(tl), "pages": text}
 
+    @telemetry.timed("render")
     def view_pages(self, key: str, pages: str | None = None) -> list[tuple[str, bytes]]:
         att = self._attachment_for(key)
         data = self._file(att)
