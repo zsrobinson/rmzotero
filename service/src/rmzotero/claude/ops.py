@@ -312,7 +312,6 @@ class LibraryOps:
             text.append({"page": labels[i], "text": t[:15000]})
         return {"attachment": att["key"], "page_count": len(tl), "pages": text}
 
-    @telemetry.timed("render")
     def view_pages(self, key: str, pages: str | None = None) -> list[tuple[str, bytes]]:
         att = self._attachment_for(key)
         data = self._file(att)
@@ -329,7 +328,8 @@ class LibraryOps:
                 blob = self.engine.cache.get_local(hashes[mapping[i]])
                 tablet_page = Page.parse(blob) if blob else None
             on_page = [a for a in anns if cv.position_of(a).get("pageIndex") == i]
-            out.append((labels[i], render.render_page(data, i, boxes[i], tablet_page, on_page)))
+            with telemetry.phase("render"):
+                out.append((labels[i], render.render_page(data, i, boxes[i], tablet_page, on_page)))
         return out
 
     # -- changing the library ------------------------------------------------------------

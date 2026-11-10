@@ -32,6 +32,7 @@ Ask the user how they want things organised before creating collections or filin
 """
 
 
+@telemetry.timed("serialize")
 def _json(data) -> str:
     return json.dumps(data, ensure_ascii=False, indent=1)
 
