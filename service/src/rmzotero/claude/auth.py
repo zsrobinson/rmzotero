@@ -42,6 +42,10 @@ class ConnectorAuth:
         status = 404
         if host not in self.hosts:
             status = 404
+        elif scope["path"].startswith("/pdf-download/"):
+            # The download handler verifies its own HMAC capability. Keep Host
+            # validation, but do not require an interactive Access JWT here.
+            return await self.app(scope, receive, send)
         elif host in self.access.hostnames:
             if scope["path"] == "/mcp":
                 tokens = headers.getlist("cf-access-jwt-assertion")

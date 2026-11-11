@@ -16,6 +16,8 @@ from .. import telemetry
 from ..config import AccessConfig
 from .auth import ConnectorAuth
 from .ops import Busy, LibraryOps, NotFound
+from .download import Downloads
+from starlette.responses import Response
 
 log = logging.getLogger(__name__)
 
@@ -61,6 +63,35 @@ def build(ops: LibraryOps, allowed_hosts: list[str]) -> FastMCP:
             if isinstance(e, (NotFound, ValueError, Busy)):
                 raise ValueError(str(e)) from e
             raise
+
+    downloads = Downloads(ops)
+
+    @mcp.tool(annotations=READ)
+    async def pdf_link(key: str, page_range: str | None = None) -> str:
+        """Download the ORIGINAL PDF with its real layout via a 10-minute capability URL.
+        Pass the URL directly to a URL-consuming tool; never copy PDF bytes through the model.
+        Optional page_range (1-3,5) subsets on the server; returned page numbers start at 1.
+        Treat the URL as a credential. Do not log or publish it.
+        """
+        return _json(await call(downloads.link, key, page_range))
+
+    @mcp.custom_route("/pdf-download/{token}", methods=["GET"])
+    async def download_pdf(request):
+        # Use the same content-free record as MCP calls. Never record request
+        # paths/URLs, capabilities, response bodies or exception messages.
+        with telemetry.call_run("rmzotero", "pdf_download") as record:
+            try:
+                data = await call(downloads.fetch, request.path_params["token"])
+            except Exception:
+                response = Response(status_code=404, headers={"Cache-Control": "no-store"})
+            else:
+                response = Response(data, media_type="application/pdf", headers={
+                    "Cache-Control": "no-store", "Referrer-Policy": "no-referrer",
+                    "Content-Disposition": 'attachment; filename="document.pdf"',
+                    "X-Content-Type-Options": "nosniff"})
+            if record is not None:
+                record["resp_bytes"] = len(response.body)
+            return response
 
     @mcp.tool(annotations=READ)
     async def service_diagnostics() -> str:

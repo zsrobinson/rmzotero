@@ -300,6 +300,14 @@ class LibraryOps:
         return collect(self.engine)
 
     @_retry_reads
+    def original_pdf(self, key: str) -> tuple[str, str, bytes]:
+        """Resolve the original attachment, never a tablet rendition or overlay."""
+        att = self._attachment_for(key)
+        if att.get("contentType") != "application/pdf" or att.get("deleted"):
+            raise NotFound("this item has no PDF")
+        return att["key"], att.get("filename") or "document.pdf", self._file(att)
+
+    @_retry_reads
     def read_pages(self, key: str, pages: str | None = None) -> dict:
         att = self._attachment_for(key)
         data = self._file(att)

@@ -203,6 +203,31 @@ def failure(exc: BaseException) -> None:
         record["outcome"], record["error_class"] = classify(exc)
 
 
+@contextmanager
+def call_run(service: str, tool: str) -> Iterator[dict[str, Any] | None]:
+    """Shared content-free record for registered MCP tools and fixed HTTP operations.
+
+    Callers supply a static operation name, never a path, URL or credential.
+    """
+    if not enabled():
+        yield None
+        return
+    start = time.perf_counter()
+    record = dict(event="mcp_call", v=1, ts=datetime.now(timezone.utc).isoformat(),
+                  service=service, tool=tool, outcome="ok", error_class=None,
+                  total_ms=0.0, phase_ms={}, req_bytes=0, resp_bytes=0)
+    token = _current.set(record)
+    try:
+        yield record
+    except BaseException as exc:
+        failure(exc)
+        raise
+    finally:
+        record["total_ms"] = (time.perf_counter() - start) * 1000
+        _current.reset(token)
+        emit(record)
+
+
 def install(mcp: FastMCP, service: str, version: str) -> None:
     """Record normalized MCP results, including SDK validation/error results.
 
@@ -225,14 +250,9 @@ def install(mcp: FastMCP, service: str, version: str) -> None:
     async def measured(request: types.CallToolRequest) -> types.ServerResult:
         if not enabled():
             return await handler(request)
-        start = time.perf_counter()
         names = {t.name for t in mcp._tool_manager.list_tools()}
-        record = dict(event="mcp_call", v=1, ts=datetime.now(timezone.utc).isoformat(),
-                      service=service, tool=request.params.name if request.params.name in names else "unknown",
-                      outcome="ok", error_class=None, total_ms=0.0, phase_ms={},
-                      req_bytes=0, resp_bytes=0)
-        token = _current.set(record)
-        try:
+        tool = request.params.name if request.params.name in names else "unknown"
+        with call_run(service, tool) as record:
             record["req_bytes"] = len(request.params.model_dump_json(by_alias=True, exclude_none=True).encode())
             if request.params.name in names:
                 result = await handler(request)
@@ -245,13 +265,6 @@ def install(mcp: FastMCP, service: str, version: str) -> None:
             if getattr(result.root, "isError", False) and record["outcome"] == "ok":
                 record["outcome"] = "tool_error"
             return result
-        except BaseException as exc:
-            failure(exc)
-            raise
-        finally:
-            record["total_ms"] = (time.perf_counter() - start) * 1000
-            _current.reset(token)
-            emit(record)
 
     mcp._mcp_server.request_handlers[types.CallToolRequest] = measured
 
