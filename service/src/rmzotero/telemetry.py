@@ -7,9 +7,12 @@ from datetime import datetime, timezone
 from functools import wraps
 import json
 import os
+import queue
 import sys
+import threading
 import time
 import subprocess
+import urllib.request
 import httpx
 from typing import Any, Callable, Iterator, TypeVar
 from mcp.server.fastmcp import FastMCP
@@ -63,6 +66,97 @@ def emit(record: dict[str, Any]) -> None:
         sys.stderr.write(safe["event"] + " " + json.dumps(safe, separators=(",", ":")) + "\n")
     except (OSError, ValueError):
         pass  # Metrics must never change tool behavior.
+    _push(safe)
+
+
+# Optional push of the same allowlisted records to the fleet collector (the NAS runs none).
+# Off unless FLEET_OTLP_LOGS_URL is set. Bounded, non-blocking, best effort: a record that
+# doesn't fit the queue, or whose POST fails, is dropped; nothing is retried.
+PUSH_ENV = "FLEET_OTLP_LOGS_URL"
+PUSH_EVENTS = frozenset({"mcp_call", "mcp_start"})
+PUSH_QUEUE = 256
+PUSH_BATCH = 64
+PUSH_TIMEOUT = 2.0
+_queue: queue.Queue[tuple[str, int, dict[str, Any]]] = queue.Queue(PUSH_QUEUE)
+_pusher: threading.Thread | None = None
+_pusher_lock = threading.Lock()
+
+
+class _NoRedirect(urllib.request.HTTPRedirectHandler):
+    def redirect_request(self, *args: Any, **kwargs: Any) -> None:
+        return None
+
+
+# Direct to the tailnet address: no proxies from the environment, no redirects.
+_opener = urllib.request.build_opener(urllib.request.ProxyHandler({}), _NoRedirect())
+
+
+def _push(safe: dict[str, Any]) -> None:
+    try:
+        url = os.environ.get(PUSH_ENV, "").strip()
+        if not url.startswith(("http://", "https://")) or safe.get("event") not in PUSH_EVENTS:
+            return
+        _start_pusher()
+        _queue.put_nowait((url, time.time_ns(), safe))
+    except Exception:
+        pass  # Full queue or anything else: drop the record.
+
+
+def _start_pusher() -> None:
+    global _pusher
+    if _pusher is not None and _pusher.is_alive():
+        return
+    with _pusher_lock:
+        if _pusher is None or not _pusher.is_alive():
+            _pusher = threading.Thread(target=_push_loop, name="telemetry-push", daemon=True)
+            _pusher.start()
+
+
+def _otlp_value(value: Any) -> dict[str, Any]:
+    if isinstance(value, bool):
+        return {"boolValue": value}
+    if isinstance(value, int):
+        return {"intValue": str(value)}
+    if isinstance(value, float):
+        return {"doubleValue": value}
+    if isinstance(value, dict):
+        return {"kvlistValue": {"values": [{"key": str(k), "value": _otlp_value(v)}
+                                           for k, v in value.items() if v is not None]}}
+    return {"stringValue": str(value)}
+
+
+def _otlp_payload(records: list[tuple[int, dict[str, Any]]]) -> bytes:
+    logs = [{"timeUnixNano": str(at), "body": _otlp_value(record)} for at, record in records]
+    return json.dumps({"resourceLogs": [{
+        "resource": {"attributes": [{"key": "service.name", "value": {"stringValue": "rmzotero"}}]},
+        "scopeLogs": [{"logRecords": logs}]}]}, separators=(",", ":")).encode()
+
+
+def _post(url: str, data: bytes) -> None:
+    request = urllib.request.Request(url, data=data, method="POST",
+                                     headers={"Content-Type": "application/json"})
+    with _opener.open(request, timeout=PUSH_TIMEOUT) as response:
+        response.read(1024)
+
+
+def _push_loop() -> None:
+    while True:
+        try:
+            url, at, record = _queue.get()
+            batch = {url: [(at, record)]}
+            while sum(map(len, batch.values())) < PUSH_BATCH:
+                try:
+                    url, at, record = _queue.get_nowait()
+                except queue.Empty:
+                    break
+                batch.setdefault(url, []).append((at, record))
+            for url, records in batch.items():
+                try:
+                    _post(url, _otlp_payload(records))
+                except Exception:
+                    pass  # Dropped; the collector being away must not matter here.
+        except Exception:
+            pass
 
 
 def classify(exc: BaseException) -> tuple[str, str]:
