@@ -239,3 +239,16 @@ permission failures classified separately. Error classes are fixed:
 Only measured phases appear; nested occurrences of the same phase count once.
 
 Call phases: `lock_wait`, `mirror_read`, `upstream`, `render`, `serialize`.
+
+### Pushing to the fleet collector
+
+The NAS runs no log collector, so the service can also push the same records to
+one: set `FLEET_OTLP_LOGS_URL` in the container's environment to an OTLP/HTTP
+logs endpoint, e.g. `http://100.100.74.90:4318/v1/logs` (home's tailnet address;
+see the compose snippet). Unset (the default), nothing is sent anywhere. When set,
+each `mcp_call` and `mcp_start` record, exactly as allowlisted above, becomes the
+map body of one OTLP JSON log record; `mcp_sync` stays on stderr. Delivery is best
+effort from a background thread: a bounded queue (256 records), batches of up to
+64, a 2-second timeout, no retries, no proxies or redirects. Records that don't
+fit the queue or fail to send are dropped, so the collector being away never
+slows or changes a tool call. Stderr output is unchanged.

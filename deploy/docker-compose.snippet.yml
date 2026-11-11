@@ -18,6 +18,7 @@ services:
     #   PUID: "1026"                      # run as this user/group; default: the owner of ./rmzotero/data
     #   PGID: "100"
     #   RMZOTERO_OCR_LANGUAGE: "eng+deu"  # tesseract languages (only English is in the image)
+    #   FLEET_OTLP_LOGS_URL: "http://100.100.74.90:4318/v1/logs"  # optional: push content-free MCP call metadata to the fleet collector (README, Telemetry)
 
   # Zotero's own metadata engine, used by the Claude connector to add items from DOIs, ISBNs and URLs.
   # Built for amd64 and arm64 by this repo's translation-server workflow (Zotero's own image is arm64-only).
