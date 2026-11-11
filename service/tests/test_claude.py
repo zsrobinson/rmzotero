@@ -117,6 +117,15 @@ def test_reading(lib_world):
         ops.get_item("NOPE1234")
 
 
+def test_original_pdf_resolves_parent_and_attachment(lib_world):
+    z, files, eng, tablet, clock, ops, ml, item, att = lib_world
+    assert ops.original_pdf(item)[0] == att
+    assert ops.original_pdf(att)[2] == PAPER
+    assert ops.original_pdf(item)[2] == PAPER
+    with pytest.raises(NotFound):
+        ops.original_pdf("MISSING1")
+
+
 def test_view_pages_draws_tablet_handwriting(lib_world):
     z, files, eng, tablet, clock, ops, ml, item, att = lib_world
     doc = tablet.open("Vaswani - 2017 - Attention")  # the tablet makes its page list on first open
@@ -317,7 +326,7 @@ def test_mcp_protocol_end_to_end(lib_world):
                     init = await s.initialize()
                     assert "reMarkable" in (init.instructions or "")
                     tools = {t.name: t for t in (await s.list_tools()).tools}
-                    assert set(tools) == {"search_library", "get_item", "list_collections", "get_annotations", "read_pages", "view_pages",
+                    assert set(tools) == {"search_library", "get_item", "list_collections", "get_annotations", "read_pages", "view_pages", "pdf_link",
                                           "add_items", "attach_pdf", "create_item", "create_collection", "file_items", "add_note",
                                           "edit_item", "service_diagnostics"}
                     assert tools["search_library"].annotations.readOnlyHint is True

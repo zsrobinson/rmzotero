@@ -252,3 +252,35 @@ effort from a background thread: a bounded queue (256 records), batches of up to
 64, a 2-second timeout, no retries, no proxies or redirects. Records that don't
 fit the queue or fail to send are dropped, so the collector being away never
 slows or changes a tool call. Stderr output is unchanged.
+
+## Original PDF handoff
+
+`pdf_link(key, page_range=None)` resolves an item or PDF attachment and returns
+`url`, `filename`, `page_count`, `byte_size`, and `expires_at` (Unix seconds).
+The URL expires after ten minutes. Give it directly to a URL-consuming service;
+PDF bytes never need to pass through model arguments. Without a range the original
+attachment bytes are unchanged; `1-3,5` produces a PDF subset with original page
+layout, numbered from 1. No tablet overlays or typeset renditions are added.
+
+Set these process environment variables on the MCP service:
+
+- `RMZOTERO_PDF_SECRET`: independent random signing secret, at least 32 bytes;
+  keep outside source control. Rotation immediately invalidates existing links.
+- `RMZOTERO_PDF_BASE_URL`: externally reachable HTTP(S) base URL, without query,
+  fragment or credentials. Prefer a private network route.
+- `RMZOTERO_PDF_MAX_BYTES`: positive byte limit (default 52428800), checked on
+  original and subset output. Existing attachment retrieval loads the source in memory.
+
+The same MCP listener serves `GET /pdf-download/{token}`. Any invalid, expired,
+missing or unavailable capability returns 404. Responses are not cacheable. Only
+exempt this path from upstream interactive authentication if needed for service
+fetches; retain authentication on MCP and all other paths. Tokens authorize access
+until expiry and bind the attachment and range; they are reusable, not single-use.
+Disable/redact download URL logging at every proxy and monitoring layer. The
+service disables HTTP access logging; do not publish returned URLs.
+
+`pdf_link` uses the same content-free call telemetry as other MCP tools. Download
+requests emit that same record schema under the fixed operation `pdf_download`,
+with byte counts and outcome only; no path, URL, token or document body is logged.
+The origin retains Host validation on downloads and checks their HMAC capability
+instead of requiring an interactive Access assertion. MCP authentication is unchanged.
